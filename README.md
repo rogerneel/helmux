@@ -119,11 +119,12 @@ Currently implementing core functionality. See `.plan/implementation.md` for the
 - [x] Phase 2: Terminal buffer with VTE parsing
 - [x] Phase 3: Basic TUI rendering
 - [x] Phase 4: Layout engine and sidebar
+- [x] Phase 5: Tab management
 
 ### In Progress
 
-- [ ] Phase 5: Tab management
 - [ ] Phase 6: Input handler and keybindings
+- [ ] Phase 7: Mouse support
 
 ## License
 
