@@ -106,7 +106,6 @@ impl TmuxConnection {
 
             // Only trim newlines, not spaces - spaces might be significant in %output data
             let line = line.trim_end_matches(|c| c == '\n' || c == '\r');
-            debug!("tmux raw: {:?}", line);
 
             let notification = Notification::parse(line)?;
 
@@ -153,6 +152,13 @@ impl TmuxConnection {
                 }
                 Notification::Exit { reason } => {
                     return Ok(TmuxEvent::Exit { reason });
+                }
+                Notification::SessionWindowChanged { window_id, .. } => {
+                    return Ok(TmuxEvent::WindowChanged { window_id });
+                }
+                Notification::UnlinkedWindowClose { window_id } => {
+                    // Treat same as WindowClose
+                    return Ok(TmuxEvent::WindowClose { window_id });
                 }
                 Notification::LayoutChange { .. }
                 | Notification::PaneModeChanged { .. }

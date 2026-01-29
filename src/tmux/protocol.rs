@@ -37,8 +37,12 @@ pub enum Notification {
     PaneModeChanged { pane_id: String },
     /// %window-pane-changed <window-id> <pane-id>
     WindowPaneChanged { window_id: String, pane_id: String },
+    /// %session-window-changed <session-id> <window-id>
+    SessionWindowChanged { session_id: String, window_id: String },
     /// %unlinked-window-add <window-id>
     UnlinkedWindowAdd { window_id: String },
+    /// %unlinked-window-close <window-id>
+    UnlinkedWindowClose { window_id: String },
     /// %client-detached <client> [reason]
     ClientDetached { client: String, reason: Option<String> },
     /// %exit or %exit [reason]
@@ -66,6 +70,8 @@ pub enum TmuxEvent {
     CommandError { id: u64, message: String },
     /// Session changed
     SessionChanged { session_id: String, name: String },
+    /// Active window changed (tab switch)
+    WindowChanged { window_id: String },
     /// tmux server exited
     Exit { reason: Option<String> },
 }
@@ -170,9 +176,18 @@ impl Notification {
                 let pane_id = parts.get(2).unwrap_or(&"").to_string();
                 Ok(Notification::WindowPaneChanged { window_id, pane_id })
             }
+            "%session-window-changed" => {
+                let session_id = parts.get(1).unwrap_or(&"").to_string();
+                let window_id = parts.get(2).unwrap_or(&"").to_string();
+                Ok(Notification::SessionWindowChanged { session_id, window_id })
+            }
             "%unlinked-window-add" => {
                 let window_id = parts.get(1).unwrap_or(&"").to_string();
                 Ok(Notification::UnlinkedWindowAdd { window_id })
+            }
+            "%unlinked-window-close" => {
+                let window_id = parts.get(1).unwrap_or(&"").to_string();
+                Ok(Notification::UnlinkedWindowClose { window_id })
             }
             "%client-detached" => {
                 let client = parts.get(1).unwrap_or(&"").to_string();
