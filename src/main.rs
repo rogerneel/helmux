@@ -14,7 +14,7 @@ use crossterm::{
 use ratatui::{backend::CrosstermBackend, Terminal};
 use terminal::TerminalBuffer;
 use tmux::{Commands, TmuxConnection, TmuxEvent};
-use ui::Viewport;
+use ui::{Layout, Sidebar, TabInfo, Viewport};
 
 const DEFAULT_SESSION: &str = "helmux-default";
 const DEBUG_LOG: &str = "/tmp/helmux-debug.log";
@@ -57,28 +57,45 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn run_app(term: &mut Terminal<CrosstermBackend<io::Stdout>>) -> anyhow::Result<()> {
-    // Get terminal size for tmux
+    // Get terminal size and create layout
     let size = term.size()?;
-    let width = size.width;
-    let height = size.height;
-    log_debug(&format!("Terminal size: {}x{}", width, height));
+    log_debug(&format!("Terminal size: {}x{}", size.width, size.height));
+
+    let area = ratatui::layout::Rect::new(0, 0, size.width, size.height);
+    let mut layout = Layout::new(area);
+    let (vp_width, vp_height) = layout.tmux_size();
+    log_debug(&format!("Viewport size: {}x{}", vp_width, vp_height));
 
     // Connect to tmux
     let mut tmux = TmuxConnection::connect(DEFAULT_SESSION).await?;
     log_debug("Connected to tmux");
 
-    // Set tmux client size to match our terminal
-    tmux.send_command(&Commands::refresh_client_size(width, height))
+    // Set tmux client size to match viewport (not full terminal)
+    tmux.send_command(&Commands::refresh_client_size(vp_width, vp_height))
         .await?;
-    log_debug(&format!("Set tmux size to {}x{}", width, height));
+    log_debug(&format!("Set tmux size to {}x{}", vp_width, vp_height));
 
-    // Terminal buffer for the active pane
-    let mut buffer = TerminalBuffer::new(width, height);
+    // Terminal buffer for the active pane (sized to viewport)
+    let mut buffer = TerminalBuffer::new(vp_width, vp_height);
     let mut active_pane: Option<String> = None;
+
+    // Tab list (will be populated from tmux in Phase 5)
+    // For now, use a placeholder
+    let mut tabs: Vec<TabInfo> = vec![TabInfo {
+        id: String::new(),
+        name: "shell".to_string(),
+        active: true,
+        activity: false,
+        index: 1,
+    }];
 
     // Initial render
     term.draw(|frame| {
-        frame.render_widget(Viewport::new(&buffer), frame.area());
+        let sidebar_area = layout.sidebar_area();
+        let viewport_area = layout.viewport_area();
+
+        frame.render_widget(Sidebar::new(&tabs), sidebar_area);
+        frame.render_widget(Viewport::new(&buffer), viewport_area);
     })?;
 
     loop {
@@ -95,12 +112,17 @@ async fn run_app(term: &mut Terminal<CrosstermBackend<io::Stdout>>) -> anyhow::R
                     }
                 }
                 Event::Resize(w, h) => {
-                    log_debug(&format!("Resize to {}x{}", w, h));
-                    // Update tmux client size
-                    tmux.send_command(&Commands::refresh_client_size(w, h))
+                    log_debug(&format!("Terminal resize to {}x{}", w, h));
+                    // Update layout with new size
+                    layout.set_area(ratatui::layout::Rect::new(0, 0, w, h));
+                    let (vp_width, vp_height) = layout.tmux_size();
+                    log_debug(&format!("Viewport resize to {}x{}", vp_width, vp_height));
+
+                    // Update tmux client size to match viewport
+                    tmux.send_command(&Commands::refresh_client_size(vp_width, vp_height))
                         .await?;
-                    // Resize our buffer
-                    buffer.resize(w, h);
+                    // Resize our buffer to match viewport
+                    buffer.resize(vp_width, vp_height);
                 }
                 Event::Mouse(_) => {
                     // Mouse handling will be added in Phase 7
@@ -173,7 +195,11 @@ async fn run_app(term: &mut Terminal<CrosstermBackend<io::Stdout>>) -> anyhow::R
 
         // Render
         term.draw(|frame| {
-            frame.render_widget(Viewport::new(&buffer), frame.area());
+            let sidebar_area = layout.sidebar_area();
+            let viewport_area = layout.viewport_area();
+
+            frame.render_widget(Sidebar::new(&tabs), sidebar_area);
+            frame.render_widget(Viewport::new(&buffer), viewport_area);
         })?;
     }
 
