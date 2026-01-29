@@ -1,7 +1,16 @@
 use ratatui::style::{Color, Modifier};
 use std::collections::VecDeque;
+use std::fs::OpenOptions;
+use std::io::Write as IoWrite;
 use tracing::trace;
 use vte::{Params, Perform};
+
+/// Debug logging function (writes to same file as main.rs)
+fn log_vte(msg: &str) {
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/tmp/helmux-debug.log") {
+        let _ = writeln!(file, "  [vte] {}", msg);
+    }
+}
 
 /// Default scrollback buffer size (number of lines)
 const DEFAULT_SCROLLBACK: usize = 1000;
@@ -634,6 +643,11 @@ fn ansi_to_color(code: u16) -> Color {
 impl Perform for TerminalBuffer {
     fn print(&mut self, c: char) {
         trace!("print: {:?}", c);
+        // Log if we're about to wrap
+        if self.cursor_col >= self.width {
+            log_vte(&format!("WRAP: printing '{}' at col {} (width {}), wrapping to next line",
+                c, self.cursor_col, self.width));
+        }
         self.write_char(c);
     }
 
@@ -709,6 +723,15 @@ impl Perform for TerminalBuffer {
 
         let params: Vec<u16> = params.iter().flat_map(|p| p.first().copied()).collect();
 
+        // Log cursor movement commands for debugging
+        match action {
+            'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G' | 'H' | 'd' | 'f' | 's' | 'u' | '`' | 'a' | 'e' => {
+                log_vte(&format!("CSI {:?} {} (cursor: {}, {})",
+                    params, action, self.cursor_row, self.cursor_col));
+            }
+            _ => {}
+        }
+
         match action {
             // Cursor movement
             'A' => {
@@ -746,12 +769,14 @@ impl Perform for TerminalBuffer {
             'G' | '`' => {
                 // CHA - Cursor Horizontal Absolute, HPA
                 let col = params.first().copied().unwrap_or(1).max(1);
+                log_vte(&format!("  -> CHA to col {} (0-indexed: {})", col, col - 1));
                 self.cursor_col = (col - 1).min(self.width.saturating_sub(1));
             }
             'H' | 'f' => {
                 // CUP - Cursor Position, HVP
                 let row = params.first().copied().unwrap_or(1);
                 let col = params.get(1).copied().unwrap_or(1);
+                log_vte(&format!("  -> CUP to ({}, {})", row, col));
                 self.set_cursor_position(row, col);
             }
             'd' => {
@@ -863,13 +888,17 @@ impl Perform for TerminalBuffer {
             // Cursor save/restore
             's' => {
                 // SCP - Save Cursor Position
+                log_vte(&format!("  -> SAVE cursor at ({}, {})", self.cursor_row, self.cursor_col));
                 self.saved_cursor = Some((self.cursor_row, self.cursor_col));
             }
             'u' => {
                 // RCP - Restore Cursor Position
                 if let Some((row, col)) = self.saved_cursor {
+                    log_vte(&format!("  -> RESTORE cursor to ({}, {})", row, col));
                     self.cursor_row = row;
                     self.cursor_col = col;
+                } else {
+                    log_vte("  -> RESTORE cursor (no saved position!)");
                 }
             }
 
@@ -881,14 +910,17 @@ impl Perform for TerminalBuffer {
 
     fn esc_dispatch(&mut self, intermediates: &[u8], _ignore: bool, byte: u8) {
         trace!("esc_dispatch: intermediates={:?}, byte={:02x}", intermediates, byte);
+        log_vte(&format!("ESC {:?} {:02x} '{}'", intermediates, byte, byte as char));
 
         match (intermediates, byte) {
             ([], b'7') => {
                 // DECSC - Save Cursor
+                log_vte(&format!("  -> DECSC save cursor at ({}, {})", self.cursor_row, self.cursor_col));
                 self.saved_cursor = Some((self.cursor_row, self.cursor_col));
             }
             ([], b'8') => {
                 // DECRC - Restore Cursor
+                log_vte(&format!("  -> DECRC restore cursor from {:?}", self.saved_cursor));
                 if let Some((row, col)) = self.saved_cursor {
                     self.cursor_row = row;
                     self.cursor_col = col;

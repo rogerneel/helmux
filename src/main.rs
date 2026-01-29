@@ -122,15 +122,20 @@ async fn run_app(term: &mut Terminal<CrosstermBackend<io::Stdout>>) -> anyhow::R
 
                         // Only process output for the active pane
                         if active_pane.as_ref() == Some(&pane_id) {
-                            // Log all output for debugging
+                            // Log raw bytes for detailed debugging
+                            log_debug(&format!("Output ({} bytes): {:?}", data.len(),
+                                data.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ")));
+                            // Also log as string for readability
                             let preview = String::from_utf8_lossy(&data);
-                            log_debug(&format!("Output: {:?}", preview));
+                            log_debug(&format!("  text: {:?}", preview));
 
+                            let (row_before, col_before) = buffer.cursor();
                             buffer.process(&data);
 
                             // Log cursor position after processing
                             let (row, col) = buffer.cursor();
-                            log_debug(&format!("  -> cursor at ({}, {})", row, col));
+                            log_debug(&format!("  cursor: ({},{}) -> ({},{})",
+                                row_before, col_before, row, col));
                         }
                     }
                     TmuxEvent::WindowAdd { .. } => {
@@ -196,9 +201,8 @@ async fn handle_key_event(
     };
 
     // Convert key to tmux send-keys format
-    let keys = key_to_tmux_keys(key);
-    if let Some(ref keys) = keys {
-        let cmd = Commands::send_keys(pane_id, keys);
+    let cmd = key_to_tmux_command(pane_id, key);
+    if let Some(cmd) = cmd {
         log_debug(&format!("Sending key: {:?} -> cmd: {}", key.code, cmd));
         tmux.send_command(&cmd).await?;
     } else {
@@ -208,52 +212,53 @@ async fn handle_key_event(
     Ok(false)
 }
 
-/// Convert a crossterm KeyEvent to tmux send-keys format
-fn key_to_tmux_keys(key: KeyEvent) -> Option<String> {
+/// Build the tmux send-keys command for a key event
+fn key_to_tmux_command(pane_id: &str, key: KeyEvent) -> Option<String> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
 
     match key.code {
         KeyCode::Char(c) => {
             if ctrl {
-                // Ctrl+letter
-                Some(format!("C-{}", c))
+                // Ctrl+letter - use key name
+                Some(format!("send-keys -t {} C-{}", pane_id, c))
             } else if alt {
-                // Alt+letter
-                Some(format!("M-{}", c))
+                // Alt+letter - use key name
+                Some(format!("send-keys -t {} M-{}", pane_id, c))
             } else {
-                // Regular character - needs quoting for special chars
-                match c {
-                    ' ' => Some("Space".to_string()),
-                    ';' => Some("\\;".to_string()),
-                    '\'' => Some("\"'\"".to_string()),
-                    '"' => Some("'\"'".to_string()),
-                    '\\' => Some("\\\\".to_string()),
-                    _ => Some(c.to_string()),
-                }
+                // Regular character - use literal mode for reliability
+                // Escape single quotes in the character
+                let escaped = match c {
+                    '\'' => "'\\''".to_string(),
+                    _ => c.to_string(),
+                };
+                Some(format!("send-keys -t {} -l '{}'", pane_id, escaped))
             }
         }
-        KeyCode::Enter => Some("Enter".to_string()),
-        KeyCode::Backspace => Some("BSpace".to_string()),
+        // Special keys use key names (not literal mode)
+        KeyCode::Enter => Some(format!("send-keys -t {} Enter", pane_id)),
+        KeyCode::Backspace => Some(format!("send-keys -t {} BSpace", pane_id)),
         KeyCode::Tab => {
-            if key.modifiers.contains(KeyModifiers::SHIFT) {
-                Some("BTab".to_string())
+            let key_name = if key.modifiers.contains(KeyModifiers::SHIFT) {
+                "BTab"
             } else {
-                Some("Tab".to_string())
-            }
+                "Tab"
+            };
+            Some(format!("send-keys -t {} {}", pane_id, key_name))
         }
-        KeyCode::Esc => Some("Escape".to_string()),
-        KeyCode::Up => Some("Up".to_string()),
-        KeyCode::Down => Some("Down".to_string()),
-        KeyCode::Left => Some("Left".to_string()),
-        KeyCode::Right => Some("Right".to_string()),
-        KeyCode::Home => Some("Home".to_string()),
-        KeyCode::End => Some("End".to_string()),
-        KeyCode::PageUp => Some("PageUp".to_string()),
-        KeyCode::PageDown => Some("PageDown".to_string()),
-        KeyCode::Delete => Some("DC".to_string()),
-        KeyCode::Insert => Some("IC".to_string()),
-        KeyCode::F(n) => Some(format!("F{}", n)),
+        KeyCode::Esc => Some(format!("send-keys -t {} Escape", pane_id)),
+        KeyCode::Up => Some(format!("send-keys -t {} Up", pane_id)),
+        KeyCode::Down => Some(format!("send-keys -t {} Down", pane_id)),
+        KeyCode::Left => Some(format!("send-keys -t {} Left", pane_id)),
+        KeyCode::Right => Some(format!("send-keys -t {} Right", pane_id)),
+        KeyCode::Home => Some(format!("send-keys -t {} Home", pane_id)),
+        KeyCode::End => Some(format!("send-keys -t {} End", pane_id)),
+        KeyCode::PageUp => Some(format!("send-keys -t {} PageUp", pane_id)),
+        KeyCode::PageDown => Some(format!("send-keys -t {} PageDown", pane_id)),
+        KeyCode::Delete => Some(format!("send-keys -t {} DC", pane_id)),
+        KeyCode::Insert => Some(format!("send-keys -t {} IC", pane_id)),
+        KeyCode::F(n) => Some(format!("send-keys -t {} F{}", pane_id, n)),
         _ => None,
     }
 }
+

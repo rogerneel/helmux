@@ -103,12 +103,18 @@ impl Notification {
                 Ok(Notification::Error { id })
             }
             "%output" => {
+                // Parse: %output <pane_id> <data...>
+                // Need to handle data that may contain spaces
                 let pane_id = parts.get(1)
                     .ok_or_else(|| ProtocolError::InvalidFormat("missing pane_id".to_string()))?
                     .to_string();
-                let data = parts.get(2)
-                    .map(|s| decode_output(s))
-                    .unwrap_or_default();
+                // Find where the data starts (after "%output " and "<pane_id> ")
+                let prefix_len = "%output ".len() + pane_id.len() + 1; // +1 for space after pane_id
+                let data = if line.len() > prefix_len {
+                    decode_output(&line[prefix_len..])
+                } else {
+                    Vec::new()
+                };
                 Ok(Notification::Output { pane_id, data })
             }
             "%window-add" => {

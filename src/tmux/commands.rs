@@ -31,8 +31,11 @@ impl Commands {
     }
 
     /// Send keys to a pane
+    /// Keys can be key names (Space, Enter, Up) or literal characters
     pub fn send_keys(pane_id: &str, keys: &str) -> String {
-        format!("send-keys -t {} {}", pane_id, escape_keys(keys))
+        // Key names should not be quoted, but special characters need escaping
+        let escaped = escape_for_send_keys(keys);
+        format!("send-keys -t {} {}", pane_id, escaped)
     }
 
     /// Send literal text to a pane (automatically quoted)
@@ -71,10 +74,40 @@ fn escape_single_quotes(s: &str) -> String {
     s.replace('\'', "'\\''")
 }
 
+/// Check if a string is a tmux key name (not a literal character)
+fn is_key_name(s: &str) -> bool {
+    matches!(
+        s,
+        "Space" | "Enter" | "Tab" | "BTab" | "Escape" | "BSpace"
+            | "Up" | "Down" | "Left" | "Right"
+            | "Home" | "End" | "PageUp" | "PageDown" | "NPage" | "PPage"
+            | "DC" | "IC" | "Insert" | "Delete"
+            | "F1" | "F2" | "F3" | "F4" | "F5" | "F6"
+            | "F7" | "F8" | "F9" | "F10" | "F11" | "F12"
+    ) || s.starts_with("C-") || s.starts_with("M-")
+}
+
 /// Escape keys for send-keys command
-fn escape_keys(s: &str) -> String {
-    // For now, just wrap in quotes. More sophisticated escaping may be needed.
-    format!("'{}'", escape_single_quotes(s))
+/// Key names (Space, Enter, C-a, etc.) are not quoted
+/// Literal characters may need quoting for special chars
+fn escape_for_send_keys(s: &str) -> String {
+    if is_key_name(s) {
+        // Key names are passed directly without quotes
+        s.to_string()
+    } else if s.len() == 1 {
+        // Single character - quote if it's a special shell character
+        let c = s.chars().next().unwrap();
+        match c {
+            // Characters that need escaping or special handling
+            ';' | '\\' | '\'' | '"' | ' ' | '`' | '$' | '!' | '&' | '|' | '(' | ')' | '{' | '}' | '[' | ']' | '<' | '>' | '*' | '?' | '#' | '~' => {
+                format!("'{}'", escape_single_quotes(s))
+            }
+            _ => s.to_string(),
+        }
+    } else {
+        // Multi-character string - wrap in quotes
+        format!("'{}'", escape_single_quotes(s))
+    }
 }
 
 #[cfg(test)]
