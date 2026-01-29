@@ -27,14 +27,26 @@ pub enum Notification {
     WindowRenamed { window_id: String, name: String },
     /// %session-changed <session-id> <name>
     SessionChanged { session_id: String, name: String },
+    /// %sessions-changed - session list changed
+    SessionsChanged,
+    /// %client-session-changed <client> <session-id> <name>
+    ClientSessionChanged { client: String, session_id: String, name: String },
     /// %layout-change <window-id> <layout>
     LayoutChange { window_id: String, layout: String },
     /// %pane-mode-changed <pane-id>
     PaneModeChanged { pane_id: String },
+    /// %window-pane-changed <window-id> <pane-id>
+    WindowPaneChanged { window_id: String, pane_id: String },
+    /// %unlinked-window-add <window-id>
+    UnlinkedWindowAdd { window_id: String },
+    /// %client-detached <client> [reason]
+    ClientDetached { client: String, reason: Option<String> },
     /// %exit or %exit [reason]
     Exit { reason: Option<String> },
     /// Data line (part of command response between %begin and %end)
     Data(String),
+    /// Unknown notification type (logged but ignored)
+    Unknown { notification_type: String, raw: String },
 }
 
 /// Higher-level event derived from notifications
@@ -138,11 +150,40 @@ impl Notification {
                     .to_string();
                 Ok(Notification::PaneModeChanged { pane_id })
             }
+            "%sessions-changed" => {
+                Ok(Notification::SessionsChanged)
+            }
+            "%client-session-changed" => {
+                let client = parts.get(1).unwrap_or(&"").to_string();
+                let session_id = parts.get(2).unwrap_or(&"").to_string();
+                let name = parts.get(3).unwrap_or(&"").to_string();
+                Ok(Notification::ClientSessionChanged { client, session_id, name })
+            }
+            "%window-pane-changed" => {
+                let window_id = parts.get(1).unwrap_or(&"").to_string();
+                let pane_id = parts.get(2).unwrap_or(&"").to_string();
+                Ok(Notification::WindowPaneChanged { window_id, pane_id })
+            }
+            "%unlinked-window-add" => {
+                let window_id = parts.get(1).unwrap_or(&"").to_string();
+                Ok(Notification::UnlinkedWindowAdd { window_id })
+            }
+            "%client-detached" => {
+                let client = parts.get(1).unwrap_or(&"").to_string();
+                let reason = parts.get(2).map(|s| s.to_string());
+                Ok(Notification::ClientDetached { client, reason })
+            }
             "%exit" => {
                 let reason = parts.get(1).map(|s| s.to_string());
                 Ok(Notification::Exit { reason })
             }
-            _ => Err(ProtocolError::UnknownType(notification_type.to_string())),
+            _ => {
+                // Return unknown notification instead of error - allows graceful handling
+                Ok(Notification::Unknown {
+                    notification_type: notification_type.to_string(),
+                    raw: line.to_string(),
+                })
+            }
         }
     }
 }

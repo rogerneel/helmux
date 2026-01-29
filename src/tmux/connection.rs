@@ -2,7 +2,7 @@ use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use thiserror::Error;
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 
 use super::protocol::{Notification, TmuxEvent};
 
@@ -18,6 +18,8 @@ pub enum ConnectionError {
     Protocol(#[from] super::protocol::ProtocolError),
     #[error("Connection closed")]
     Closed,
+    #[error("tmux exited with error: {0}")]
+    TmuxError(String),
 }
 
 pub type Result<T> = std::result::Result<T, ConnectionError>;
@@ -39,15 +41,31 @@ impl TmuxConnection {
     pub async fn connect(session: &str) -> Result<Self> {
         debug!("Connecting to tmux session: {}", session);
 
+        // Use -C for control mode (not -CC which is iTerm2 specific)
         let mut child = Command::new("tmux")
-            .args(["-CC", "new-session", "-A", "-s", session])
+            .args(["-C", "new-session", "-A", "-s", session])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()?;
 
         let stdin = child.stdin.take().ok_or(ConnectionError::NoStdin)?;
         let stdout = child.stdout.take().ok_or(ConnectionError::NoStdout)?;
+
+        // Spawn a task to log stderr
+        if let Some(stderr) = child.stderr.take() {
+            tokio::spawn(async move {
+                let mut reader = BufReader::new(stderr);
+                let mut line = String::new();
+                while let Ok(n) = reader.read_line(&mut line).await {
+                    if n == 0 {
+                        break;
+                    }
+                    warn!("tmux stderr: {}", line.trim());
+                    line.clear();
+                }
+            });
+        }
 
         Ok(Self {
             child,
@@ -79,11 +97,15 @@ impl TmuxConnection {
             let bytes_read = self.stdout.read_line(&mut line).await?;
 
             if bytes_read == 0 {
+                // Check if tmux process exited
+                if let Ok(Some(status)) = self.child.try_wait() {
+                    debug!("tmux process exited with status: {:?}", status);
+                }
                 return Err(ConnectionError::Closed);
             }
 
             let line = line.trim_end();
-            trace!("tmux: {}", line);
+            debug!("tmux raw: {:?}", line);
 
             let notification = Notification::parse(line)?;
 
@@ -131,8 +153,18 @@ impl TmuxConnection {
                 Notification::Exit { reason } => {
                     return Ok(TmuxEvent::Exit { reason });
                 }
-                Notification::LayoutChange { .. } | Notification::PaneModeChanged { .. } => {
+                Notification::LayoutChange { .. }
+                | Notification::PaneModeChanged { .. }
+                | Notification::SessionsChanged
+                | Notification::ClientSessionChanged { .. }
+                | Notification::WindowPaneChanged { .. }
+                | Notification::UnlinkedWindowAdd { .. }
+                | Notification::ClientDetached { .. } => {
                     // Ignore these for now, continue reading
+                }
+                Notification::Unknown { notification_type, .. } => {
+                    debug!("Unknown tmux notification: {}", notification_type);
+                    // Continue reading
                 }
             }
         }
