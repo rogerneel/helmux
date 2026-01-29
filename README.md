@@ -15,10 +15,11 @@ Helmux wraps tmux's control mode to provide a more user-friendly terminal multip
 
 - Visual tab sidebar with activity indicators
 - Click-to-switch tab navigation
-- Collapsible sidebar (toggle with `Ctrl-b b`)
+- Double-click tab to rename
+- Interactive rename dialog (`Ctrl-b ,`)
 - Full color and attribute support (256 colors, bold, italic, etc.)
 - Mouse passthrough to terminal applications
-- Tab renaming via OSC sequences, keyboard, or CLI
+- Mode indicators in sidebar (shows when prefix key is active)
 
 ## Installation
 
@@ -66,8 +67,10 @@ All shortcuts use `Ctrl-b` as the prefix key (like tmux):
 ### Mouse
 
 - Click a tab in the sidebar to switch to it
+- Double-click a tab to rename it
 - Click `[+]` at the bottom of sidebar to create a new tab
 - Mouse events pass through to terminal applications (vim, etc.)
+- Supports click, drag, and scroll in the terminal viewport
 
 ## Configuration
 
@@ -108,6 +111,8 @@ Helmux uses tmux's control mode (`tmux -C`) to communicate with tmux programmati
 - **tmux module**: Connects to tmux, parses notifications, sends commands
 - **terminal module**: VTE-based terminal emulator for processing pane output
 - **ui module**: ratatui-based rendering with sidebar and viewport widgets
+- **input module**: Modal input handling with prefix key system
+- **app module**: Application state management with per-tab buffers
 
 ## Development Status
 
@@ -120,11 +125,13 @@ Currently implementing core functionality. See `.plan/implementation.md` for the
 - [x] Phase 3: Basic TUI rendering
 - [x] Phase 4: Layout engine and sidebar
 - [x] Phase 5: Tab management
+- [x] Phase 6: Input handler and keybindings
+- [x] Phase 7: Mouse support
 
 ### In Progress
 
-- [ ] Phase 6: Input handler and keybindings
-- [ ] Phase 7: Mouse support
+- [ ] Phase 8: Tab renaming (OSC sequences, CLI - interactive rename done)
+- [ ] Phase 9: Collapsible sidebar
 
 ## License
 

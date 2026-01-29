@@ -259,17 +259,22 @@ fn truncate_to_width(s: &str, max_width: usize) -> String {
 
 /// Calculate which tab index was clicked given a row in the sidebar
 /// Returns None if the click was on the [+] button or outside tabs
-pub fn row_to_tab_index(row: u16, num_tabs: usize, area_height: u16) -> Option<usize> {
-    let row = row as usize;
+/// `header_rows` is the number of rows used by mode indicator (0 in normal mode, 1 in prefix/rename)
+pub fn row_to_tab_index(row: u16, num_tabs: usize, area_height: u16, header_rows: u16) -> Option<usize> {
+    // Account for header rows (mode indicator)
+    if row < header_rows {
+        return None;
+    }
+    let adjusted_row = (row - header_rows) as usize;
 
     // Last row is the [+] button
-    if row >= area_height.saturating_sub(1) as usize {
+    if row >= area_height.saturating_sub(1) {
         return None;
     }
 
     // Check if row corresponds to a tab
-    if row < num_tabs {
-        Some(row)
+    if adjusted_row < num_tabs {
+        Some(adjusted_row)
     } else {
         None
     }
@@ -293,12 +298,19 @@ mod tests {
 
     #[test]
     fn test_row_to_tab_index() {
-        // 3 tabs, height 10 (last row is [+])
-        assert_eq!(row_to_tab_index(0, 3, 10), Some(0));
-        assert_eq!(row_to_tab_index(1, 3, 10), Some(1));
-        assert_eq!(row_to_tab_index(2, 3, 10), Some(2));
-        assert_eq!(row_to_tab_index(3, 3, 10), None); // No tab at row 3
-        assert_eq!(row_to_tab_index(9, 3, 10), None); // [+] button row
+        // 3 tabs, height 10 (last row is [+]), no header
+        assert_eq!(row_to_tab_index(0, 3, 10, 0), Some(0));
+        assert_eq!(row_to_tab_index(1, 3, 10, 0), Some(1));
+        assert_eq!(row_to_tab_index(2, 3, 10, 0), Some(2));
+        assert_eq!(row_to_tab_index(3, 3, 10, 0), None); // No tab at row 3
+        assert_eq!(row_to_tab_index(9, 3, 10, 0), None); // [+] button row
+
+        // With 1 header row (prefix/rename mode)
+        assert_eq!(row_to_tab_index(0, 3, 10, 1), None); // Header row
+        assert_eq!(row_to_tab_index(1, 3, 10, 1), Some(0)); // First tab
+        assert_eq!(row_to_tab_index(2, 3, 10, 1), Some(1)); // Second tab
+        assert_eq!(row_to_tab_index(3, 3, 10, 1), Some(2)); // Third tab
+        assert_eq!(row_to_tab_index(4, 3, 10, 1), None); // No tab at row 4
     }
 
     #[test]
