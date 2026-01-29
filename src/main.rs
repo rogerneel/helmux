@@ -98,8 +98,14 @@ async fn run_app(term: &mut Terminal<CrosstermBackend<io::Stdout>>) -> anyhow::R
                     if input.is_renaming() && key.code == KeyCode::Enter {
                         let new_name = input.finish_rename();
                         if let Some(window_id) = app.active_window_id() {
-                            tmux.send_command(&Commands::rename_window(window_id, &new_name))
-                                .await?;
+                            if new_name.trim().is_empty() {
+                                // Empty name - enable automatic rename (shows running process)
+                                tmux.send_command(&Commands::enable_automatic_rename(window_id))
+                                    .await?;
+                            } else {
+                                tmux.send_command(&Commands::rename_window(window_id, &new_name))
+                                    .await?;
+                            }
                         }
                         render(term, &layout, &app, &input)?;
                         continue;

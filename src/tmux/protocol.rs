@@ -139,7 +139,13 @@ impl Notification {
                 let window_id = parts.get(1)
                     .ok_or_else(|| ProtocolError::InvalidFormat("missing window_id".to_string()))?
                     .to_string();
-                let name = parts.get(2).unwrap_or(&"").to_string();
+                // Name can contain spaces, so we need everything after "%window-renamed <window_id> "
+                let prefix_len = "%window-renamed ".len() + window_id.len() + 1;
+                let name = if line.len() > prefix_len {
+                    line[prefix_len..].to_string()
+                } else {
+                    String::new()
+                };
                 Ok(Notification::WindowRenamed { window_id, name })
             }
             "%session-changed" => {
@@ -295,6 +301,39 @@ mod tests {
         match notif {
             Notification::Data(s) => assert_eq!(s, "some data line"),
             _ => panic!("Expected Data"),
+        }
+    }
+
+    #[test]
+    fn test_parse_window_renamed() {
+        // Simple name without spaces
+        let notif = Notification::parse("%window-renamed @1 mytab").unwrap();
+        match notif {
+            Notification::WindowRenamed { window_id, name } => {
+                assert_eq!(window_id, "@1");
+                assert_eq!(name, "mytab");
+            }
+            _ => panic!("Expected WindowRenamed notification"),
+        }
+
+        // Name with spaces
+        let notif = Notification::parse("%window-renamed @1 my tab name").unwrap();
+        match notif {
+            Notification::WindowRenamed { window_id, name } => {
+                assert_eq!(window_id, "@1");
+                assert_eq!(name, "my tab name");
+            }
+            _ => panic!("Expected WindowRenamed notification"),
+        }
+
+        // Empty name
+        let notif = Notification::parse("%window-renamed @1").unwrap();
+        match notif {
+            Notification::WindowRenamed { window_id, name } => {
+                assert_eq!(window_id, "@1");
+                assert_eq!(name, "");
+            }
+            _ => panic!("Expected WindowRenamed notification"),
         }
     }
 

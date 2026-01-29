@@ -22,7 +22,13 @@ impl Commands {
 
     /// Rename a window
     pub fn rename_window(window_id: &str, name: &str) -> String {
-        format!("rename-window -t {} '{}'", window_id, escape_single_quotes(name))
+        // Use double quotes for tmux control mode compatibility with spaces
+        format!("rename-window -t {} \"{}\"", window_id, escape_double_quotes(name))
+    }
+
+    /// Enable automatic window renaming (resets to showing running process)
+    pub fn enable_automatic_rename(window_id: &str) -> String {
+        format!("set-window-option -t {} automatic-rename on", window_id)
     }
 
     /// Kill (close) a window
@@ -72,6 +78,11 @@ impl Commands {
 /// Escape single quotes for tmux shell arguments
 fn escape_single_quotes(s: &str) -> String {
     s.replace('\'', "'\\''")
+}
+
+/// Escape double quotes for tmux control mode
+fn escape_double_quotes(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 /// Check if a string is a tmux key name (not a literal character)
@@ -139,7 +150,25 @@ mod tests {
     fn test_rename_window() {
         assert_eq!(
             Commands::rename_window("@1", "my-tab"),
-            "rename-window -t @1 'my-tab'"
+            "rename-window -t @1 \"my-tab\""
+        );
+        // Test with spaces
+        assert_eq!(
+            Commands::rename_window("@1", "my tab name"),
+            "rename-window -t @1 \"my tab name\""
+        );
+        // Test with quotes
+        assert_eq!(
+            Commands::rename_window("@1", "tab \"quoted\""),
+            "rename-window -t @1 \"tab \\\"quoted\\\"\""
+        );
+    }
+
+    #[test]
+    fn test_enable_automatic_rename() {
+        assert_eq!(
+            Commands::enable_automatic_rename("@1"),
+            "set-window-option -t @1 automatic-rename on"
         );
     }
 }
