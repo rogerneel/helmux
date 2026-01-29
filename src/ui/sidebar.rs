@@ -20,10 +20,22 @@ pub struct TabInfo {
     pub index: usize,
 }
 
+/// Mode indicator for the sidebar
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SidebarMode {
+    /// Normal mode
+    Normal,
+    /// Prefix key was pressed, waiting for command
+    Prefix,
+    /// Renaming a tab
+    Rename,
+}
+
 /// Widget that renders the sidebar with tab list
 pub struct Sidebar<'a> {
     tabs: &'a [TabInfo],
     collapsed: bool,
+    mode: SidebarMode,
 }
 
 impl<'a> Sidebar<'a> {
@@ -31,11 +43,17 @@ impl<'a> Sidebar<'a> {
         Self {
             tabs,
             collapsed: false,
+            mode: SidebarMode::Normal,
         }
     }
 
     pub fn collapsed(mut self, collapsed: bool) -> Self {
         self.collapsed = collapsed;
+        self
+    }
+
+    pub fn mode(mut self, mode: SidebarMode) -> Self {
+        self.mode = mode;
         self
     }
 }
@@ -64,10 +82,21 @@ impl Widget for Sidebar<'_> {
         // Content area (excluding border)
         let content_width = area.width.saturating_sub(1);
 
+        // Draw mode indicator at top if not in normal mode
+        let tabs_start_y = self.render_mode_indicator(area, buf, content_width);
+
+        // Adjust area for tabs
+        let tabs_area = Rect {
+            x: area.x,
+            y: tabs_start_y,
+            width: area.width,
+            height: area.height.saturating_sub(tabs_start_y - area.y),
+        };
+
         if self.collapsed {
-            self.render_collapsed(area, buf, content_width);
+            self.render_collapsed(tabs_area, buf, content_width);
         } else {
-            self.render_expanded(area, buf, content_width);
+            self.render_expanded(tabs_area, buf, content_width);
         }
 
         // Draw [+] button at bottom
@@ -76,6 +105,43 @@ impl Widget for Sidebar<'_> {
 }
 
 impl Sidebar<'_> {
+    /// Render mode indicator at top of sidebar, returns the y position where tabs should start
+    fn render_mode_indicator(&self, area: Rect, buf: &mut Buffer, content_width: u16) -> u16 {
+        match self.mode {
+            SidebarMode::Normal => area.y, // No indicator in normal mode
+            SidebarMode::Prefix => {
+                let style = Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD);
+                let text = if content_width >= 10 {
+                    "-- ^B --"
+                } else {
+                    "^B"
+                };
+                let fill = " ".repeat(content_width as usize);
+                buf.set_string(area.x, area.y, &fill, style);
+                buf.set_string(area.x, area.y, text, style);
+                area.y + 1
+            }
+            SidebarMode::Rename => {
+                let style = Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD);
+                let text = if content_width >= 10 {
+                    "RENAME"
+                } else {
+                    "REN"
+                };
+                let fill = " ".repeat(content_width as usize);
+                buf.set_string(area.x, area.y, &fill, style);
+                buf.set_string(area.x, area.y, text, style);
+                area.y + 1
+            }
+        }
+    }
+
     fn render_collapsed(&self, area: Rect, buf: &mut Buffer, content_width: u16) {
         // Collapsed mode: show only indicator and number
         // Format: "● 1" or "  2" or "* 3"

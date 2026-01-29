@@ -1,4 +1,5 @@
 mod app;
+mod input;
 mod terminal;
 mod tmux;
 mod ui;
@@ -8,7 +9,7 @@ use std::io::{self, stdout, Write as IoWrite};
 use std::time::Duration;
 
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
+    event::{self, Event, KeyCode},
     execute,
     terminal::{
         disable_raw_mode, enable_raw_mode, Clear, ClearType, EnterAlternateScreen,
@@ -18,8 +19,9 @@ use crossterm::{
 use ratatui::{backend::CrosstermBackend, Terminal};
 
 use app::App;
+use input::{Action, InputHandler, InputMode};
 use tmux::{Commands, TmuxConnection, TmuxEvent};
-use ui::{Layout, Sidebar, Viewport};
+use ui::{Layout, RenameOverlay, Sidebar, SidebarMode, Viewport};
 
 const DEFAULT_SESSION: &str = "helmux-default";
 const DEBUG_LOG: &str = "/tmp/helmux-debug.log";
@@ -75,14 +77,15 @@ async fn run_app(term: &mut Terminal<CrosstermBackend<io::Stdout>>) -> anyhow::R
     tmux.send_command(&Commands::refresh_client_size(vp_width, vp_height))
         .await?;
 
-    // Create app state
+    // Create app state and input handler
     let mut app = App::new(vp_width, vp_height);
+    let mut input = InputHandler::new();
 
     // Query initial window list
     app.sync_from_tmux(&mut tmux).await?;
 
     // Initial render (empty until we get window list)
-    render(term, &layout, &app)?;
+    render(term, &layout, &app, &input)?;
 
     loop {
         // Poll for terminal events with a short timeout
@@ -91,9 +94,25 @@ async fn run_app(term: &mut Terminal<CrosstermBackend<io::Stdout>>) -> anyhow::R
         if has_event {
             match event::read()? {
                 Event::Key(key) => {
-                    match handle_key_event(key, &mut app, &mut tmux).await? {
-                        KeyAction::Continue => {}
-                        KeyAction::Exit => break,
+                    // Special handling for Enter in rename mode
+                    if input.is_renaming() && key.code == KeyCode::Enter {
+                        let new_name = input.finish_rename();
+                        if let Some(window_id) = app.active_window_id() {
+                            tmux.send_command(&Commands::rename_window(window_id, &new_name))
+                                .await?;
+                        }
+                        render(term, &layout, &app, &input)?;
+                        continue;
+                    }
+
+                    // Handle key through input handler
+                    let action = input.handle_key(key);
+
+                    match handle_action(action, &mut app, &mut tmux, &mut input, &mut layout)
+                        .await?
+                    {
+                        LoopAction::Continue => {}
+                        LoopAction::Exit => break,
                     }
                 }
                 Event::Resize(w, h) => {
@@ -128,7 +147,7 @@ async fn run_app(term: &mut Terminal<CrosstermBackend<io::Stdout>>) -> anyhow::R
         }
 
         // Render
-        render(term, &layout, &app)?;
+        render(term, &layout, &app, &input)?;
     }
 
     Ok(())
@@ -139,6 +158,7 @@ fn render(
     term: &mut Terminal<CrosstermBackend<io::Stdout>>,
     layout: &Layout,
     app: &App,
+    input: &InputHandler,
 ) -> anyhow::Result<()> {
     let tabs = app.tab_infos();
 
@@ -146,125 +166,115 @@ fn render(
         let sidebar_area = layout.sidebar_area();
         let viewport_area = layout.viewport_area();
 
-        frame.render_widget(Sidebar::new(&tabs), sidebar_area);
+        // Convert input mode to sidebar mode
+        let sidebar_mode = match input.mode() {
+            InputMode::Normal => SidebarMode::Normal,
+            InputMode::Prefix => SidebarMode::Prefix,
+            InputMode::Rename => SidebarMode::Rename,
+        };
+
+        frame.render_widget(Sidebar::new(&tabs).mode(sidebar_mode), sidebar_area);
 
         // Render the active tab's buffer
         if let Some(tab) = app.active_tab() {
             frame.render_widget(Viewport::new(&tab.buffer), viewport_area);
+        }
+
+        // Render rename overlay if in rename mode
+        if input.is_renaming() {
+            let overlay_area = RenameOverlay::centered_rect(frame.area());
+            frame.render_widget(RenameOverlay::new(input.rename_buffer()), overlay_area);
         }
     })?;
 
     Ok(())
 }
 
-/// Result of handling a key event
-enum KeyAction {
+/// Result of handling an action
+enum LoopAction {
     Continue,
     Exit,
 }
 
-/// Handle a key event
-async fn handle_key_event(
-    key: KeyEvent,
+/// Handle an action from the input handler
+async fn handle_action(
+    action: Action,
     app: &mut App,
     tmux: &mut TmuxConnection,
-) -> anyhow::Result<KeyAction> {
-    // Check for exit key (Ctrl-Q) - always works
-    if key.code == KeyCode::Char('q') && key.modifiers.contains(KeyModifiers::CONTROL) {
-        return Ok(KeyAction::Exit);
-    }
+    input: &mut InputHandler,
+    _layout: &mut Layout,
+) -> anyhow::Result<LoopAction> {
+    match action {
+        Action::None => {}
 
-    // Check for prefix key (Ctrl-B)
-    if key.code == KeyCode::Char('b') && key.modifiers.contains(KeyModifiers::CONTROL) {
-        app.prefix_pending = true;
-        return Ok(KeyAction::Continue);
-    }
-
-    // Handle prefix commands
-    if app.prefix_pending {
-        app.prefix_pending = false;
-        return handle_prefix_command(key, app, tmux).await;
-    }
-
-    // Normal key - send to active pane
-    if let Some(pane_id) = app.active_pane_id() {
-        if let Some(cmd) = key_to_tmux_command(pane_id, key) {
-            tmux.send_command(&cmd).await?;
+        Action::Exit => {
+            return Ok(LoopAction::Exit);
         }
-    }
 
-    Ok(KeyAction::Continue)
-}
-
-/// Handle a command after the prefix key (Ctrl-B)
-async fn handle_prefix_command(
-    key: KeyEvent,
-    app: &mut App,
-    tmux: &mut TmuxConnection,
-) -> anyhow::Result<KeyAction> {
-    match key.code {
-        // Create new tab
-        KeyCode::Char('c') => {
+        Action::NewTab => {
             tmux.send_command(&Commands::new_window(None)).await?;
         }
 
-        // Close current tab
-        KeyCode::Char('x') => {
+        Action::CloseTab => {
             if let Some(window_id) = app.active_window_id() {
                 tmux.send_command(&Commands::kill_window(window_id)).await?;
             }
         }
 
-        // Next tab
-        KeyCode::Char('n') => {
+        Action::NextTab => {
             if let Some(window_id) = app.next_window_id() {
                 tmux.send_command(&Commands::select_window(window_id))
                     .await?;
             }
         }
 
-        // Previous tab
-        KeyCode::Char('p') => {
+        Action::PrevTab => {
             if let Some(window_id) = app.prev_window_id() {
                 tmux.send_command(&Commands::select_window(window_id))
                     .await?;
             }
         }
 
-        // Tab by number (1-9)
-        KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => {
-            let index = c.to_digit(10).unwrap() as usize;
+        Action::SelectTab(index) => {
             if let Some(window_id) = app.window_id_by_index(index) {
                 tmux.send_command(&Commands::select_window(window_id))
                     .await?;
             }
         }
 
-        // Toggle sidebar (will be implemented in Phase 9)
-        KeyCode::Char('b') => {
-            // TODO: layout.toggle_sidebar()
+        Action::ToggleSidebar => {
+            // Will be implemented in Phase 9
+            // layout.toggle_sidebar();
         }
 
-        // Detach
-        KeyCode::Char('d') => {
+        Action::StartRename => {
+            // Get current tab name and start rename mode
+            if let Some(tab) = app.active_tab() {
+                input.start_rename(&tab.name);
+            }
+        }
+
+        Action::Detach => {
             tmux.send_command(&Commands::detach()).await?;
-            return Ok(KeyAction::Exit);
+            return Ok(LoopAction::Exit);
         }
 
-        // Send literal Ctrl-B to the pane (Ctrl-B Ctrl-B)
-        KeyCode::Char('B') if key.modifiers.contains(KeyModifiers::SHIFT) => {
+        Action::SendCtrlB => {
             if let Some(pane_id) = app.active_pane_id() {
                 tmux.send_command(&format!("send-keys -t {} C-b", pane_id))
                     .await?;
             }
         }
 
-        _ => {
-            // Unknown prefix command - ignore
+        Action::SendKey(key_str) => {
+            if let Some(pane_id) = app.active_pane_id() {
+                tmux.send_command(&format!("send-keys -t {} {}", pane_id, key_str))
+                    .await?;
+            }
         }
     }
 
-    Ok(KeyAction::Continue)
+    Ok(LoopAction::Continue)
 }
 
 /// Handle a tmux event
@@ -330,53 +340,4 @@ async fn handle_tmux_event(
     }
 
     Ok(())
-}
-
-/// Build the tmux send-keys command for a key event
-fn key_to_tmux_command(pane_id: &str, key: KeyEvent) -> Option<String> {
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    let alt = key.modifiers.contains(KeyModifiers::ALT);
-
-    match key.code {
-        KeyCode::Char(c) => {
-            if ctrl {
-                // Ctrl+letter - use key name
-                Some(format!("send-keys -t {} C-{}", pane_id, c))
-            } else if alt {
-                // Alt+letter - use key name
-                Some(format!("send-keys -t {} M-{}", pane_id, c))
-            } else {
-                // Regular character - use literal mode for reliability
-                let escaped = match c {
-                    '\'' => "'\\''".to_string(),
-                    _ => c.to_string(),
-                };
-                Some(format!("send-keys -t {} -l '{}'", pane_id, escaped))
-            }
-        }
-        // Special keys use key names (not literal mode)
-        KeyCode::Enter => Some(format!("send-keys -t {} Enter", pane_id)),
-        KeyCode::Backspace => Some(format!("send-keys -t {} BSpace", pane_id)),
-        KeyCode::Tab => {
-            let key_name = if key.modifiers.contains(KeyModifiers::SHIFT) {
-                "BTab"
-            } else {
-                "Tab"
-            };
-            Some(format!("send-keys -t {} {}", pane_id, key_name))
-        }
-        KeyCode::Esc => Some(format!("send-keys -t {} Escape", pane_id)),
-        KeyCode::Up => Some(format!("send-keys -t {} Up", pane_id)),
-        KeyCode::Down => Some(format!("send-keys -t {} Down", pane_id)),
-        KeyCode::Left => Some(format!("send-keys -t {} Left", pane_id)),
-        KeyCode::Right => Some(format!("send-keys -t {} Right", pane_id)),
-        KeyCode::Home => Some(format!("send-keys -t {} Home", pane_id)),
-        KeyCode::End => Some(format!("send-keys -t {} End", pane_id)),
-        KeyCode::PageUp => Some(format!("send-keys -t {} PageUp", pane_id)),
-        KeyCode::PageDown => Some(format!("send-keys -t {} PageDown", pane_id)),
-        KeyCode::Delete => Some(format!("send-keys -t {} DC", pane_id)),
-        KeyCode::Insert => Some(format!("send-keys -t {} IC", pane_id)),
-        KeyCode::F(n) => Some(format!("send-keys -t {} F{}", pane_id, n)),
-        _ => None,
-    }
 }

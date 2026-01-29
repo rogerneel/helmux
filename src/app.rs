@@ -41,8 +41,6 @@ pub struct App {
     /// Viewport dimensions
     viewport_width: u16,
     viewport_height: u16,
-    /// Prefix key state (true if we just received Ctrl-b)
-    pub prefix_pending: bool,
 }
 
 impl App {
@@ -53,7 +51,6 @@ impl App {
             active_window_id: None,
             viewport_width,
             viewport_height,
-            prefix_pending: false,
         }
     }
 
