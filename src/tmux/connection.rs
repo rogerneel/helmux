@@ -2,7 +2,7 @@ use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use thiserror::Error;
-use tracing::{debug, trace, warn};
+use tracing::{debug, warn};
 
 use super::protocol::{Notification, TmuxEvent};
 
@@ -104,7 +104,8 @@ impl TmuxConnection {
                 return Err(ConnectionError::Closed);
             }
 
-            let line = line.trim_end();
+            // Only trim newlines, not spaces - spaces might be significant in %output data
+            let line = line.trim_end_matches(|c| c == '\n' || c == '\r');
             debug!("tmux raw: {:?}", line);
 
             let notification = Notification::parse(line)?;

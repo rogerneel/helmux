@@ -117,25 +117,13 @@ Currently implementing core functionality. See `.plan/implementation.md` for the
 
 - [x] Phase 1: tmux control mode connection
 - [x] Phase 2: Terminal buffer with VTE parsing
-- [x] Phase 3: Basic TUI rendering (in progress)
+- [x] Phase 3: Basic TUI rendering
+- [x] Phase 4: Layout engine and sidebar
 
 ### In Progress
 
-- [ ] Phase 4: Layout engine and sidebar
 - [ ] Phase 5: Tab management
-
-## Known Issues
-
-### Space characters not displaying with zsh-syntax-highlighting
-
-When using zsh with syntax highlighting plugins, space characters typed mid-command may not display correctly (e.g., `echo hello` appears as `echohelloo`). The commands execute correctly - only the display is affected.
-
-**Cause**: zsh-syntax-highlighting's redraw sequence positions the cursor on top of space characters, causing the next typed character to overwrite them.
-
-**Workarounds**:
-- Commands still execute correctly despite the display issue
-- Disabling zsh-syntax-highlighting resolves the display problem
-- Using bash or a simpler zsh configuration works normally
+- [ ] Phase 6: Input handler and keybindings
 
 ## License
 

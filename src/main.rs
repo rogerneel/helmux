@@ -59,21 +59,16 @@ async fn main() -> anyhow::Result<()> {
 async fn run_app(term: &mut Terminal<CrosstermBackend<io::Stdout>>) -> anyhow::Result<()> {
     // Get terminal size and create layout
     let size = term.size()?;
-    log_debug(&format!("Terminal size: {}x{}", size.width, size.height));
-
     let area = ratatui::layout::Rect::new(0, 0, size.width, size.height);
     let mut layout = Layout::new(area);
     let (vp_width, vp_height) = layout.tmux_size();
-    log_debug(&format!("Viewport size: {}x{}", vp_width, vp_height));
 
     // Connect to tmux
     let mut tmux = TmuxConnection::connect(DEFAULT_SESSION).await?;
-    log_debug("Connected to tmux");
 
     // Set tmux client size to match viewport (not full terminal)
     tmux.send_command(&Commands::refresh_client_size(vp_width, vp_height))
         .await?;
-    log_debug(&format!("Set tmux size to {}x{}", vp_width, vp_height));
 
     // Terminal buffer for the active pane (sized to viewport)
     let mut buffer = TerminalBuffer::new(vp_width, vp_height);
@@ -106,18 +101,13 @@ async fn run_app(term: &mut Terminal<CrosstermBackend<io::Stdout>>) -> anyhow::R
             match event::read()? {
                 Event::Key(key) => {
                     if handle_key_event(key, &mut tmux, &active_pane).await? {
-                        // Exit requested
-                        log_debug("Exit requested via Ctrl-Q");
-                        break;
+                        break; // Exit requested
                     }
                 }
                 Event::Resize(w, h) => {
-                    log_debug(&format!("Terminal resize to {}x{}", w, h));
                     // Update layout with new size
                     layout.set_area(ratatui::layout::Rect::new(0, 0, w, h));
                     let (vp_width, vp_height) = layout.tmux_size();
-                    log_debug(&format!("Viewport resize to {}x{}", vp_width, vp_height));
-
                     // Update tmux client size to match viewport
                     tmux.send_command(&Commands::refresh_client_size(vp_width, vp_height))
                         .await?;
@@ -144,36 +134,15 @@ async fn run_app(term: &mut Terminal<CrosstermBackend<io::Stdout>>) -> anyhow::R
 
                         // Only process output for the active pane
                         if active_pane.as_ref() == Some(&pane_id) {
-                            // Log raw bytes for detailed debugging
-                            log_debug(&format!("Output ({} bytes): {:?}", data.len(),
-                                data.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ")));
-                            // Also log as string for readability
-                            let preview = String::from_utf8_lossy(&data);
-                            log_debug(&format!("  text: {:?}", preview));
-
-                            let (row_before, col_before) = buffer.cursor();
                             buffer.process(&data);
-
-                            // Log cursor position after processing
-                            let (row, col) = buffer.cursor();
-                            log_debug(&format!("  cursor: ({},{}) -> ({},{})",
-                                row_before, col_before, row, col));
                         }
                     }
-                    TmuxEvent::WindowAdd { .. } => {
-                        log_debug("Window added");
-                    }
-                    TmuxEvent::WindowClose { .. } => {
-                        log_debug("Window closed");
-                    }
-                    TmuxEvent::WindowRenamed { .. } => {
-                        log_debug("Window renamed");
-                    }
-                    TmuxEvent::SessionChanged { .. } => {
-                        log_debug("Session changed");
-                    }
-                    TmuxEvent::CommandResponse { .. } => {
-                        // Command completed (don't log every one, too noisy)
+                    TmuxEvent::WindowAdd { .. }
+                    | TmuxEvent::WindowClose { .. }
+                    | TmuxEvent::WindowRenamed { .. }
+                    | TmuxEvent::SessionChanged { .. }
+                    | TmuxEvent::CommandResponse { .. } => {
+                        // Will be handled in Phase 5
                     }
                     TmuxEvent::CommandError { id, message } => {
                         log_debug(&format!("Command {} error: {}", id, message));
@@ -220,19 +189,12 @@ async fn handle_key_event(
     // Get the pane to send to
     let pane_id = match active_pane {
         Some(id) => id,
-        None => {
-            log_debug("Key pressed but no active pane yet");
-            return Ok(false);
-        }
+        None => return Ok(false), // No active pane yet
     };
 
     // Convert key to tmux send-keys format
-    let cmd = key_to_tmux_command(pane_id, key);
-    if let Some(cmd) = cmd {
-        log_debug(&format!("Sending key: {:?} -> cmd: {}", key.code, cmd));
+    if let Some(cmd) = key_to_tmux_command(pane_id, key) {
         tmux.send_command(&cmd).await?;
-    } else {
-        log_debug(&format!("Unhandled key: {:?}", key.code));
     }
 
     Ok(false)

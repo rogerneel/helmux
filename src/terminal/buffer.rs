@@ -1,16 +1,6 @@
 use ratatui::style::{Color, Modifier};
 use std::collections::VecDeque;
-use std::fs::OpenOptions;
-use std::io::Write as IoWrite;
-use tracing::trace;
 use vte::{Params, Perform};
-
-/// Debug logging function (writes to same file as main.rs)
-fn log_vte(msg: &str) {
-    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open("/tmp/helmux-debug.log") {
-        let _ = writeln!(file, "  [vte] {}", msg);
-    }
-}
 
 /// Default scrollback buffer size (number of lines)
 const DEFAULT_SCROLLBACK: usize = 1000;
@@ -595,9 +585,7 @@ impl TerminalBuffer {
                 // Bright background colors
                 100..=107 => self.current_bg = ansi_to_color(param - 100 + 8),
 
-                _ => {
-                    trace!("unhandled SGR: {}", param);
-                }
+                _ => {}
             }
         }
     }
@@ -642,17 +630,10 @@ fn ansi_to_color(code: u16) -> Color {
 // Implement VTE Perform trait for terminal emulation
 impl Perform for TerminalBuffer {
     fn print(&mut self, c: char) {
-        trace!("print: {:?}", c);
-        // Log if we're about to wrap
-        if self.cursor_col >= self.width {
-            log_vte(&format!("WRAP: printing '{}' at col {} (width {}), wrapping to next line",
-                c, self.cursor_col, self.width));
-        }
         self.write_char(c);
     }
 
     fn execute(&mut self, byte: u8) {
-        trace!("execute: {:02x}", byte);
         match byte {
             0x07 => {
                 // BEL - Bell (ignore for now)
@@ -673,40 +654,23 @@ impl Perform for TerminalBuffer {
                 // CR - Carriage Return
                 self.carriage_return();
             }
-            _ => {
-                trace!("unhandled execute: {:02x}", byte);
-            }
+            _ => {}
         }
     }
 
-    fn hook(&mut self, params: &Params, intermediates: &[u8], _ignore: bool, action: char) {
-        trace!(
-            "hook: params={:?}, intermediates={:?}, action={:?}",
-            params,
-            intermediates,
-            action
-        );
-    }
+    fn hook(&mut self, _params: &Params, _intermediates: &[u8], _ignore: bool, _action: char) {}
 
-    fn put(&mut self, byte: u8) {
-        trace!("put: {:02x}", byte);
-    }
+    fn put(&mut self, _byte: u8) {}
 
-    fn unhook(&mut self) {
-        trace!("unhook");
-    }
+    fn unhook(&mut self) {}
 
     fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
-        trace!("osc_dispatch: {:?}", params);
-
         // OSC sequences we care about:
         // OSC 0 ; title BEL - Set icon name and window title
         // OSC 2 ; title BEL - Set window title
         if let Some(&code) = params.first() {
             if code == b"0" || code == b"2" {
-                if let Some(title) = params.get(1) {
-                    let title = String::from_utf8_lossy(title);
-                    trace!("Window title: {}", title);
+                if let Some(_title) = params.get(1) {
                     // TODO: Emit event for title change
                 }
             }
@@ -714,23 +678,7 @@ impl Perform for TerminalBuffer {
     }
 
     fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], _ignore: bool, action: char) {
-        trace!(
-            "csi_dispatch: params={:?}, intermediates={:?}, action={:?}",
-            params,
-            intermediates,
-            action
-        );
-
         let params: Vec<u16> = params.iter().flat_map(|p| p.first().copied()).collect();
-
-        // Log cursor movement commands for debugging
-        match action {
-            'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G' | 'H' | 'd' | 'f' | 's' | 'u' | '`' | 'a' | 'e' => {
-                log_vte(&format!("CSI {:?} {} (cursor: {}, {})",
-                    params, action, self.cursor_row, self.cursor_col));
-            }
-            _ => {}
-        }
 
         match action {
             // Cursor movement
@@ -769,14 +717,12 @@ impl Perform for TerminalBuffer {
             'G' | '`' => {
                 // CHA - Cursor Horizontal Absolute, HPA
                 let col = params.first().copied().unwrap_or(1).max(1);
-                log_vte(&format!("  -> CHA to col {} (0-indexed: {})", col, col - 1));
                 self.cursor_col = (col - 1).min(self.width.saturating_sub(1));
             }
             'H' | 'f' => {
                 // CUP - Cursor Position, HVP
                 let row = params.first().copied().unwrap_or(1);
                 let col = params.get(1).copied().unwrap_or(1);
-                log_vte(&format!("  -> CUP to ({}, {})", row, col));
                 self.set_cursor_position(row, col);
             }
             'd' => {
@@ -888,39 +834,28 @@ impl Perform for TerminalBuffer {
             // Cursor save/restore
             's' => {
                 // SCP - Save Cursor Position
-                log_vte(&format!("  -> SAVE cursor at ({}, {})", self.cursor_row, self.cursor_col));
                 self.saved_cursor = Some((self.cursor_row, self.cursor_col));
             }
             'u' => {
                 // RCP - Restore Cursor Position
                 if let Some((row, col)) = self.saved_cursor {
-                    log_vte(&format!("  -> RESTORE cursor to ({}, {})", row, col));
                     self.cursor_row = row;
                     self.cursor_col = col;
-                } else {
-                    log_vte("  -> RESTORE cursor (no saved position!)");
                 }
             }
 
-            _ => {
-                trace!("unhandled CSI: {:?} {:?}", action, params);
-            }
+            _ => {}
         }
     }
 
     fn esc_dispatch(&mut self, intermediates: &[u8], _ignore: bool, byte: u8) {
-        trace!("esc_dispatch: intermediates={:?}, byte={:02x}", intermediates, byte);
-        log_vte(&format!("ESC {:?} {:02x} '{}'", intermediates, byte, byte as char));
-
         match (intermediates, byte) {
             ([], b'7') => {
                 // DECSC - Save Cursor
-                log_vte(&format!("  -> DECSC save cursor at ({}, {})", self.cursor_row, self.cursor_col));
                 self.saved_cursor = Some((self.cursor_row, self.cursor_col));
             }
             ([], b'8') => {
                 // DECRC - Restore Cursor
-                log_vte(&format!("  -> DECRC restore cursor from {:?}", self.saved_cursor));
                 if let Some((row, col)) = self.saved_cursor {
                     self.cursor_row = row;
                     self.cursor_col = col;
@@ -948,9 +883,7 @@ impl Perform for TerminalBuffer {
                 self.clear();
                 self.reset_attributes();
             }
-            _ => {
-                trace!("unhandled ESC: {:?} {:02x}", intermediates, byte);
-            }
+            _ => {}
         }
     }
 }
