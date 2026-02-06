@@ -165,18 +165,28 @@ async fn run_app(term: &mut Terminal<CrosstermBackend<io::Stdout>>) -> anyhow::R
             }
         }
 
-        // Check for tmux events (non-blocking)
-        match tokio::time::timeout(Duration::from_millis(1), tmux.next_event()).await {
-            Ok(Ok(event)) => {
-                handle_tmux_event(event, &mut app, &mut tmux).await?;
+        // Drain available tmux events in batches for throughput.
+        // Without batching, heavy-output programs like "claude" flood the event
+        // queue faster than one-event-per-render-frame can keep up.
+        let mut tmux_disconnected = false;
+        for _ in 0..200 {
+            match tokio::time::timeout(Duration::from_millis(1), tmux.next_event()).await {
+                Ok(Ok(event)) => {
+                    handle_tmux_event(event, &mut app, &mut tmux).await?;
+                }
+                Ok(Err(e)) => {
+                    log_debug(&format!("Connection error: {}", e));
+                    tmux_disconnected = true;
+                    break;
+                }
+                Err(_) => {
+                    // No more events ready
+                    break;
+                }
             }
-            Ok(Err(e)) => {
-                log_debug(&format!("Connection error: {}", e));
-                break;
-            }
-            Err(_) => {
-                // Timeout - no tmux event, continue
-            }
+        }
+        if tmux_disconnected {
+            break;
         }
 
         // Render
@@ -437,12 +447,16 @@ async fn handle_mouse_event(
             }
         }
         HitRegion::Viewport { row, col } => {
-            // Forward mouse events to tmux pane
+            // Only forward mouse events if the pane's program has mouse tracking enabled.
+            // Otherwise the raw escape sequences get printed as text by the shell.
             *last_tab_click = None;
-            if let Some(pane_id) = app.active_pane_id() {
-                let mouse_cmd = mouse_event_to_tmux(pane_id, mouse.kind, col, row);
-                if let Some(cmd) = mouse_cmd {
-                    tmux.send_command(&cmd).await?;
+            let mouse_enabled = app.active_tab().map_or(false, |t| t.buffer.mouse_tracking());
+            if mouse_enabled {
+                if let Some(pane_id) = app.active_pane_id() {
+                    let mouse_cmd = mouse_event_to_tmux(pane_id, mouse.kind, col, row);
+                    if let Some(cmd) = mouse_cmd {
+                        tmux.send_command(&cmd).await?;
+                    }
                 }
             }
         }

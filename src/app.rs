@@ -14,6 +14,10 @@ pub struct Tab {
     pub name: String,
     /// Terminal buffer for this tab
     pub buffer: TerminalBuffer,
+    /// Persistent VTE parser for this tab's terminal emulation.
+    /// Must be reused across process() calls so escape sequences
+    /// split across multiple %output events are handled correctly.
+    pub parser: vte::Parser,
     /// Whether there's unseen activity
     pub activity: bool,
 }
@@ -25,6 +29,7 @@ impl Tab {
             pane_id,
             name,
             buffer: TerminalBuffer::new(width, height),
+            parser: vte::Parser::new(),
             activity: false,
         }
     }
@@ -198,7 +203,7 @@ impl App {
         let is_active = self.active_pane_id() == Some(pane_id);
 
         if let Some(tab) = self.tab_by_pane_mut(pane_id) {
-            tab.buffer.process(data);
+            tab.buffer.process(&mut tab.parser, data);
             // Mark activity if not active tab
             if !is_active {
                 tab.activity = true;

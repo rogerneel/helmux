@@ -111,6 +111,9 @@ pub struct TerminalBuffer {
     saved_cursor: Option<(u16, u16)>,
     /// Origin mode - cursor positions relative to scroll region
     origin_mode: bool,
+    /// Mouse tracking mode (DEC private modes 1000/1002/1003).
+    /// When true, the program in the pane wants mouse events forwarded.
+    mouse_tracking: bool,
 }
 
 impl TerminalBuffer {
@@ -133,12 +136,14 @@ impl TerminalBuffer {
             scroll_bottom: height.saturating_sub(1),
             saved_cursor: None,
             origin_mode: false,
+            mouse_tracking: false,
         }
     }
 
-    /// Process raw bytes from terminal output
-    pub fn process(&mut self, data: &[u8]) {
-        let mut parser = vte::Parser::new();
+    /// Process raw bytes from terminal output using an external persistent parser.
+    /// The parser must be reused across calls to correctly handle escape sequences
+    /// that span multiple output events.
+    pub fn process(&mut self, parser: &mut vte::Parser, data: &[u8]) {
         for byte in data {
             parser.advance(self, *byte);
         }
@@ -157,6 +162,11 @@ impl TerminalBuffer {
     /// Check if cursor is visible
     pub fn cursor_visible(&self) -> bool {
         self.cursor_visible
+    }
+
+    /// Check if the program has enabled mouse tracking
+    pub fn mouse_tracking(&self) -> bool {
+        self.mouse_tracking
     }
 
     /// Get a reference to the cells grid
@@ -812,6 +822,7 @@ impl Perform for TerminalBuffer {
                         match param {
                             25 => self.cursor_visible = true,   // DECTCEM - Show Cursor
                             6 => self.origin_mode = true,       // DECOM
+                            1000 | 1002 | 1003 => self.mouse_tracking = true,
                             _ => {}
                         }
                     }
@@ -825,6 +836,7 @@ impl Perform for TerminalBuffer {
                         match param {
                             25 => self.cursor_visible = false,  // DECTCEM - Hide Cursor
                             6 => self.origin_mode = false,      // DECOM
+                            1000 | 1002 | 1003 => self.mouse_tracking = false,
                             _ => {}
                         }
                     }
@@ -960,7 +972,8 @@ mod tests {
     #[test]
     fn test_process_text() {
         let mut buf = TerminalBuffer::new(80, 24);
-        buf.process(b"Hello");
+        let mut parser = vte::Parser::new();
+        buf.process(&mut parser, b"Hello");
         assert_eq!(buf.get_cell(0, 0).unwrap().character, 'H');
         assert_eq!(buf.get_cell(0, 4).unwrap().character, 'o');
         assert_eq!(buf.cursor(), (0, 5));
@@ -969,7 +982,8 @@ mod tests {
     #[test]
     fn test_process_newline() {
         let mut buf = TerminalBuffer::new(80, 24);
-        buf.process(b"Line1\r\nLine2");
+        let mut parser = vte::Parser::new();
+        buf.process(&mut parser, b"Line1\r\nLine2");
         assert_eq!(buf.get_cell(0, 0).unwrap().character, 'L');
         assert_eq!(buf.get_cell(1, 0).unwrap().character, 'L');
     }
@@ -977,27 +991,30 @@ mod tests {
     #[test]
     fn test_process_cursor_movement() {
         let mut buf = TerminalBuffer::new(80, 24);
+        let mut parser = vte::Parser::new();
         // Move cursor to row 5, col 10
-        buf.process(b"\x1b[5;10H");
+        buf.process(&mut parser, b"\x1b[5;10H");
         assert_eq!(buf.cursor(), (4, 9)); // 0-indexed
 
         // Move cursor up 2
-        buf.process(b"\x1b[2A");
+        buf.process(&mut parser, b"\x1b[2A");
         assert_eq!(buf.cursor(), (2, 9));
     }
 
     #[test]
     fn test_process_clear_screen() {
         let mut buf = TerminalBuffer::new(80, 24);
-        buf.process(b"Hello");
-        buf.process(b"\x1b[2J"); // Clear screen
+        let mut parser = vte::Parser::new();
+        buf.process(&mut parser, b"Hello");
+        buf.process(&mut parser, b"\x1b[2J"); // Clear screen
         assert_eq!(buf.get_cell(0, 0).unwrap().character, ' ');
     }
 
     #[test]
     fn test_process_colors() {
         let mut buf = TerminalBuffer::new(80, 24);
-        buf.process(b"\x1b[31mRed\x1b[0m");
+        let mut parser = vte::Parser::new();
+        buf.process(&mut parser, b"\x1b[31mRed\x1b[0m");
         assert_eq!(buf.get_cell(0, 0).unwrap().fg, Color::Red);
         assert_eq!(buf.get_cell(0, 0).unwrap().character, 'R');
     }
@@ -1005,7 +1022,8 @@ mod tests {
     #[test]
     fn test_process_bold() {
         let mut buf = TerminalBuffer::new(80, 24);
-        buf.process(b"\x1b[1mBold\x1b[0m");
+        let mut parser = vte::Parser::new();
+        buf.process(&mut parser, b"\x1b[1mBold\x1b[0m");
         assert!(buf.get_cell(0, 0).unwrap().attrs.bold);
     }
 }

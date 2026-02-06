@@ -109,15 +109,14 @@ impl Notification {
                 Ok(Notification::Error { id })
             }
             "%output" => {
-                // Parse: %output <pane_id> <data...>
-                // Need to handle data that may contain spaces
+                // Note: in production, %output is parsed at the byte level in
+                // connection.rs before reaching here. This path exists for tests.
                 let pane_id = parts.get(1)
                     .ok_or_else(|| ProtocolError::InvalidFormat("missing pane_id".to_string()))?
                     .to_string();
-                // Find where the data starts (after "%output " and "<pane_id> ")
-                let prefix_len = "%output ".len() + pane_id.len() + 1; // +1 for space after pane_id
+                let prefix_len = "%output ".len() + pane_id.len() + 1;
                 let data = if line.len() > prefix_len {
-                    decode_output(&line[prefix_len..])
+                    decode_output_bytes(line[prefix_len..].as_bytes())
                 } else {
                     Vec::new()
                 };
@@ -215,46 +214,68 @@ impl Notification {
     }
 }
 
-/// Decode tmux escaped output
-/// tmux escapes special characters in %output data
-fn decode_output(encoded: &str) -> Vec<u8> {
-    let mut result = Vec::new();
-    let mut chars = encoded.chars().peekable();
+/// Decode tmux escaped output from raw bytes.
+///
+/// tmux control mode escapes:
+/// - `\\` -> backslash
+/// - `\r`, `\n`, `\t` -> CR, LF, TAB
+/// - `\ooo` (1-3 octal digits) -> byte value (e.g., `\033` = ESC, `\177` = DEL)
+/// - Bytes >= 0x80 are sent as raw bytes (not escaped)
+///
+/// This operates on `&[u8]` rather than `&str` because the data may contain
+/// raw non-UTF-8 bytes from terminal output.
+pub fn decode_output_bytes(encoded: &[u8]) -> Vec<u8> {
+    let mut result = Vec::with_capacity(encoded.len());
+    let mut i = 0;
 
-    while let Some(c) = chars.next() {
-        if c == '\\' {
-            match chars.next() {
-                Some('\\') => result.push(b'\\'),
-                Some('r') => result.push(b'\r'),
-                Some('n') => result.push(b'\n'),
-                Some('t') => result.push(b'\t'),
-                Some('0') => {
-                    // Octal escape: \0xx
-                    let mut octal = String::new();
+    while i < encoded.len() {
+        if encoded[i] == b'\\' {
+            i += 1;
+            if i >= encoded.len() {
+                result.push(b'\\');
+                break;
+            }
+            match encoded[i] {
+                b'\\' => {
+                    result.push(b'\\');
+                    i += 1;
+                }
+                b'r' => {
+                    result.push(b'\r');
+                    i += 1;
+                }
+                b'n' => {
+                    result.push(b'\n');
+                    i += 1;
+                }
+                b't' => {
+                    result.push(b'\t');
+                    i += 1;
+                }
+                b'0'..=b'7' => {
+                    // Octal escape: \o, \oo, or \ooo (tmux uses \%03o = 3 digits)
+                    let mut val: u16 = (encoded[i] - b'0') as u16;
+                    i += 1;
                     for _ in 0..2 {
-                        if let Some(&c) = chars.peek() {
-                            if c.is_ascii_digit() && c < '8' {
-                                octal.push(chars.next().unwrap());
-                            } else {
-                                break;
-                            }
+                        if i < encoded.len() && encoded[i] >= b'0' && encoded[i] <= b'7' {
+                            val = val * 8 + (encoded[i] - b'0') as u16;
+                            i += 1;
+                        } else {
+                            break;
                         }
                     }
-                    if let Ok(byte) = u8::from_str_radix(&octal, 8) {
-                        result.push(byte);
-                    }
+                    result.push(val as u8);
                 }
-                Some(c) => {
+                c => {
                     // Unknown escape, keep as-is
                     result.push(b'\\');
-                    let mut buf = [0u8; 4];
-                    result.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+                    result.push(c);
+                    i += 1;
                 }
-                None => result.push(b'\\'),
             }
         } else {
-            let mut buf = [0u8; 4];
-            result.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+            result.push(encoded[i]);
+            i += 1;
         }
     }
 
@@ -338,9 +359,19 @@ mod tests {
     }
 
     #[test]
-    fn test_decode_output() {
-        assert_eq!(decode_output("hello\\nworld"), b"hello\nworld");
-        assert_eq!(decode_output("tab\\there"), b"tab\there");
-        assert_eq!(decode_output("back\\\\slash"), b"back\\slash");
+    fn test_decode_output_bytes() {
+        assert_eq!(decode_output_bytes(b"hello\\nworld"), b"hello\nworld");
+        assert_eq!(decode_output_bytes(b"tab\\there"), b"tab\there");
+        assert_eq!(decode_output_bytes(b"back\\\\slash"), b"back\\slash");
+        // Octal: \033 = ESC (27)
+        assert_eq!(decode_output_bytes(b"\\033"), vec![27u8]);
+        // Octal: \177 = DEL (127) - previously broken, only \0xx was handled
+        assert_eq!(decode_output_bytes(b"\\177"), vec![127u8]);
+        // Octal: \007 = BEL (7)
+        assert_eq!(decode_output_bytes(b"\\007"), vec![7u8]);
+        // Raw bytes >= 0x80 passed through as-is
+        assert_eq!(decode_output_bytes(&[0xE4, 0xB8, 0xAD]), vec![0xE4, 0xB8, 0xAD]);
+        // Trailing backslash
+        assert_eq!(decode_output_bytes(b"end\\"), b"end\\");
     }
 }
