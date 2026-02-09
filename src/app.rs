@@ -197,8 +197,9 @@ impl App {
             .map(|(id, _)| id.as_str())
     }
 
-    /// Process output for a pane
-    pub fn process_output(&mut self, pane_id: &str, data: &[u8]) {
+    /// Process output for a pane.
+    /// Returns Some((window_id, title)) if an OSC title sequence was detected.
+    pub fn process_output(&mut self, pane_id: &str, data: &[u8]) -> Option<(String, String)> {
         // Check if this is the active pane
         let is_active = self.active_pane_id() == Some(pane_id);
 
@@ -208,7 +209,12 @@ impl App {
             if !is_active {
                 tab.activity = true;
             }
+            // Check for OSC title change
+            if let Some(title) = tab.buffer.take_title() {
+                return Some((tab.window_id.clone(), title));
+            }
         }
+        None
     }
 
     /// Get tab info for the sidebar

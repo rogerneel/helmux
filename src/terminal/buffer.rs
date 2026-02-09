@@ -114,6 +114,8 @@ pub struct TerminalBuffer {
     /// Mouse tracking mode (DEC private modes 1000/1002/1003).
     /// When true, the program in the pane wants mouse events forwarded.
     mouse_tracking: bool,
+    /// Pending title from OSC sequence (set by osc_dispatch, consumed by take_title)
+    pending_title: Option<String>,
 }
 
 impl TerminalBuffer {
@@ -137,6 +139,7 @@ impl TerminalBuffer {
             saved_cursor: None,
             origin_mode: false,
             mouse_tracking: false,
+            pending_title: None,
         }
     }
 
@@ -167,6 +170,12 @@ impl TerminalBuffer {
     /// Check if the program has enabled mouse tracking
     pub fn mouse_tracking(&self) -> bool {
         self.mouse_tracking
+    }
+
+    /// Take the pending title if one was set by an OSC sequence.
+    /// This clears the pending title after returning it.
+    pub fn take_title(&mut self) -> Option<String> {
+        self.pending_title.take()
     }
 
     /// Get a reference to the cells grid
@@ -678,10 +687,11 @@ impl Perform for TerminalBuffer {
         // OSC sequences we care about:
         // OSC 0 ; title BEL - Set icon name and window title
         // OSC 2 ; title BEL - Set window title
-        if let Some(&code) = params.first() {
-            if code == b"0" || code == b"2" {
-                if let Some(_title) = params.get(1) {
-                    // TODO: Emit event for title change
+        if let Some(code) = params.first() {
+            if *code == b"0" || *code == b"2" {
+                if let Some(title_bytes) = params.get(1) {
+                    let title = String::from_utf8_lossy(title_bytes).to_string();
+                    self.pending_title = Some(title);
                 }
             }
         }
@@ -1025,5 +1035,37 @@ mod tests {
         let mut parser = vte::Parser::new();
         buf.process(&mut parser, b"\x1b[1mBold\x1b[0m");
         assert!(buf.get_cell(0, 0).unwrap().attrs.bold);
+    }
+
+    #[test]
+    fn test_osc_title_bell_terminated() {
+        let mut buf = TerminalBuffer::new(80, 24);
+        let mut parser = vte::Parser::new();
+        // OSC 0 ; title BEL
+        buf.process(&mut parser, b"\x1b]0;my-agent\x07");
+        assert_eq!(buf.take_title(), Some("my-agent".to_string()));
+        // Should be cleared after take
+        assert_eq!(buf.take_title(), None);
+    }
+
+    #[test]
+    fn test_osc_title_st_terminated() {
+        let mut buf = TerminalBuffer::new(80, 24);
+        let mut parser = vte::Parser::new();
+        // OSC 2 ; title ST (ESC \)
+        buf.process(&mut parser, b"\x1b]2;window-title\x1b\\");
+        assert_eq!(buf.take_title(), Some("window-title".to_string()));
+    }
+
+    #[test]
+    fn test_osc_title_with_text() {
+        let mut buf = TerminalBuffer::new(80, 24);
+        let mut parser = vte::Parser::new();
+        // Mix of text and OSC sequence
+        buf.process(&mut parser, b"Hello\x1b]0;my-title\x07World");
+        assert_eq!(buf.take_title(), Some("my-title".to_string()));
+        // Text should still be rendered
+        assert_eq!(buf.get_cell(0, 0).unwrap().character, 'H');
+        assert_eq!(buf.get_cell(0, 5).unwrap().character, 'W');
     }
 }

@@ -8,6 +8,7 @@ use std::fs::OpenOptions;
 use std::io::{self, stdout, Write as IoWrite};
 use std::time::{Duration, Instant};
 
+use clap::{Parser, Subcommand};
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, MouseButton, MouseEventKind},
     execute,
@@ -23,6 +24,29 @@ use input::{Action, InputHandler, InputMode};
 use tmux::{Commands, TmuxConnection, TmuxEvent};
 use ui::{is_new_tab_button, row_to_tab_index, HitRegion, Layout, RenameOverlay, Sidebar, SidebarMode, Viewport};
 
+/// A Rust frontend for tmux with a left-side clickable tab bar
+#[derive(Parser)]
+#[command(name = "helmux", version, about)]
+struct Cli {
+    /// Session name to attach to or create
+    #[arg(short, long, default_value = DEFAULT_SESSION)]
+    session: String,
+
+    #[command(subcommand)]
+    command: Option<CliCommand>,
+}
+
+#[derive(Subcommand)]
+enum CliCommand {
+    /// Rename the current tab/window
+    Rename {
+        /// New name for the tab
+        name: String,
+    },
+    /// List all tabs in the session
+    List,
+}
+
 const DEFAULT_SESSION: &str = "helmux-default";
 const DEBUG_LOG: &str = "/tmp/helmux-debug.log";
 
@@ -34,6 +58,19 @@ fn log_debug(msg: &str) {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let cli = Cli::parse();
+
+    // Handle subcommands that don't need the TUI
+    match &cli.command {
+        Some(CliCommand::Rename { name }) => {
+            return handle_rename_command(&cli.session, name).await;
+        }
+        Some(CliCommand::List) => {
+            return handle_list_command(&cli.session).await;
+        }
+        None => {}
+    }
+
     // Clear debug log
     let _ = std::fs::write(DEBUG_LOG, "");
     log_debug("=== helmux starting ===");
@@ -47,7 +84,7 @@ async fn main() -> anyhow::Result<()> {
     term.clear()?;
 
     // Run the app and capture result
-    let result = run_app(&mut term).await;
+    let result = run_app(&mut term, &cli.session).await;
 
     // Restore terminal
     disable_raw_mode()?;
@@ -63,7 +100,45 @@ async fn main() -> anyhow::Result<()> {
     result
 }
 
-async fn run_app(term: &mut Terminal<CrosstermBackend<io::Stdout>>) -> anyhow::Result<()> {
+/// Handle the rename subcommand - renames the active window in tmux
+async fn handle_rename_command(session: &str, name: &str) -> anyhow::Result<()> {
+    use tokio::process::Command;
+
+    let status = Command::new("tmux")
+        .args(["-L", session, "rename-window", name])
+        .status()
+        .await?;
+
+    if !status.success() {
+        anyhow::bail!("Failed to rename window. Is tmux session '{}' running?", session);
+    }
+
+    println!("Renamed current tab to: {}", name);
+    Ok(())
+}
+
+/// Handle the list subcommand - lists all windows in the session
+async fn handle_list_command(session: &str) -> anyhow::Result<()> {
+    use tokio::process::Command;
+
+    let output = Command::new("tmux")
+        .args([
+            "-L", session,
+            "list-windows",
+            "-F", "#{window_index}: #{window_name}#{?window_active, (active),}",
+        ])
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        anyhow::bail!("Failed to list windows. Is tmux session '{}' running?", session);
+    }
+
+    print!("{}", String::from_utf8_lossy(&output.stdout));
+    Ok(())
+}
+
+async fn run_app(term: &mut Terminal<CrosstermBackend<io::Stdout>>, session: &str) -> anyhow::Result<()> {
     // Get terminal size and create layout
     let size = term.size()?;
     let area = ratatui::layout::Rect::new(0, 0, size.width, size.height);
@@ -71,7 +146,7 @@ async fn run_app(term: &mut Terminal<CrosstermBackend<io::Stdout>>) -> anyhow::R
     let (vp_width, vp_height) = layout.tmux_size();
 
     // Connect to tmux
-    let mut tmux = TmuxConnection::connect(DEFAULT_SESSION).await?;
+    let mut tmux = TmuxConnection::connect(session).await?;
 
     // Set tmux client size to match viewport (not full terminal)
     tmux.send_command(&Commands::refresh_client_size(vp_width, vp_height))
@@ -334,7 +409,11 @@ async fn handle_tmux_event(
                 return Ok(());
             }
 
-            app.process_output(&pane_id, &data);
+            // Process output and check for OSC title changes
+            if let Some((window_id, title)) = app.process_output(&pane_id, &data) {
+                tmux.send_command(&Commands::rename_window(&window_id, &title))
+                    .await?;
+            }
         }
 
         TmuxEvent::WindowAdd { window_id } => {
