@@ -2,6 +2,47 @@
 
 A modern tmux frontend with a clickable left-side tab bar, built in Rust.
 
+## Status: paused (September 2026)
+
+Helmux was a two-week prototype (January to February 2026) of a tmux-native,
+agent-forward terminal multiplexer: a place to run several coding agents side
+by side while keeping a real tmux server underneath. Development is paused and
+the code is left as-is.
+
+[herdr](https://github.com/herdrdev/herdr) now covers this space thoroughly.
+It is a tmux *replacement* rather than a tmux frontend: its own Rust server owns
+the PTYs, every pane is classified as working, blocked, idle, or done using
+lifecycle hooks and per-agent screen manifests, agents can drive it through a
+CLI and socket API, and it handles detach, layout restore, and multiple SSH
+machines. If you want a runtime for coding agents today, use herdr.
+
+### How the approaches differ
+
+Helmux bet on layering over stock tmux. It attaches in control mode (`tmux -C`),
+re-emulates each pane's `%output` stream with its own VT parser, and draws the
+result in a ratatui UI with a tab sidebar. Persistence, detach, and remote attach
+came free from tmux. The cost was double terminal emulation, control-mode output
+flooding under heavy agent output, and a UI that replaced tmux's own rather than
+extending it. Helmux never got as far as agent state detection.
+
+Herdr bet the other way: own the terminals directly, and treat tmux as something
+to replace. That made it far more work to build but removed every limit tmux
+imposed.
+
+A few helmux ideas still hold up:
+
+- tmux is a perfectly good persistence and remote substrate for agent panes.
+- The OSC window title is a strong, cheap "agent is working" signal. Herdr's
+  highest-priority Claude Code rule is a regex on exactly that title.
+- Agent state detection only needs a snapshot of the bottom of the pane buffer,
+  never a full emulator. tmux already exposes that via `capture-pane` and
+  `#{pane_title}`.
+
+If this project is ever revived, the promising direction is not a TUI. It is a
+thin agent-state layer for stock tmux: watch panes, classify them with
+herdr-style manifests, publish state as a pane option for the status line, and
+offer `wait` and `prompt` commands so agents can coordinate inside plain tmux.
+
 ## Overview
 
 Helmux wraps tmux's control mode to provide a more user-friendly terminal multiplexer experience with:
